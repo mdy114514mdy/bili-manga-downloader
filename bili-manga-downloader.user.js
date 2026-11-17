@@ -2,9 +2,9 @@
 // @name         B漫章节导出（PDF + ZIP）
 // @name:en      BiliManga Chapter Exporter
 // @namespace    https://github.com/mdy114514mdy/bili-manga-downloader
-// @version      1.1
-// @description  在哔哩哔哩漫画章节页右上角加按钮，一键抓本话全部原图，生成 PDF 和 ZIP 下载。零外部依赖。
-// @description:en Add a button on bilibili manga chapter pages: grab every original page image and pack them into PDF + ZIP.
+// @version      1.2
+// @description  哔哩哔哩漫画：章节页一键导出本话 PDF+ZIP；详情页一键下载全本（逐章打包成一个大 ZIP）。零外部依赖。
+// @description:en Export one chapter (PDF+ZIP) or the whole series (one big ZIP) on bilibili manga.
 // @author       mdy114514mdy
 // @match        https://manga.bilibili.com/*
 // @icon         https://raw.githubusercontent.com/mdy114514mdy/bili-manga-downloader/main/assets/icon-128.png
@@ -592,8 +592,363 @@
     });
   }
 
+  /* =========================================================
+   * 7. 全本下载（仅在详情页 /detail/mcXXXX 生效）
+   *    思路：不离开详情页，用隐藏 iframe 逐章加载章节页，
+   *    借用章节页里同一份脚本的采集能力，逐章产出 PDF / 图片 ZIP，
+   *    最后拼成一个大 ZIP。
+   * =======================================================*/
+  function chapterLabel(short) {
+    return /^\d+$/.test(String(short)) ? '第' + short + '话' : String(short);
+  }
+
+  function readChapterList() {
+    const m = location.pathname.match(/\/detail\/mc(\d+)/);
+    if (!m) return null;
+    const comicId = m[1];
+    const known = new Set();
+    document.querySelectorAll('a[href*="/mc' + comicId + '/"]').forEach((a) => {
+      const mm = (a.getAttribute('href') || '').match(/\/mc\d+\/(\d+)/);
+      if (mm) known.add(Number(mm[1]));
+    });
+    const el = document.querySelector('.episode-list');
+    const comp = el && (el.__vueParentComponent || el.__vue__);
+    const arrs = [];
+    try {
+      const eff = comp && comp._scope && comp._scope.effects;
+      if (eff) {
+        for (const k of Object.keys(eff)) {
+          const v = eff[k] && eff[k].value;
+          if (!Array.isArray(v)) continue;
+          for (const sub of v) {
+            if (Array.isArray(sub) && sub.length && sub[0] && typeof sub[0].id === 'number' && 'ord' in sub[0]) {
+              arrs.push(sub);
+            }
+          }
+        }
+      }
+    } catch (e) {}
+    if (!arrs.length) return null;
+    let book = arrs.find((a) => a.some((it) => known.has(it.id)));
+    if (!book) {
+      book = arrs.find((a) => a.some((it) => Number(it.ord) === 1)) ||
+             arrs.slice().sort((a, b) => b.length - a.length)[0];
+    }
+    const list = book.slice()
+      .sort((a, b) => Number(a.ord) - Number(b.ord))
+      .map((it) => ({
+        id: it.id,
+        ord: Number(it.ord),
+        short: String(it._shortTitle != null ? it._shortTitle : it.ord),
+        locked: !!it.isLocked,
+      }));
+    const bookName = (document.title || '').split(' - ')[0].trim() || '漫画';
+    return { comicId, list, bookName };
+  }
+
+  async function fetchChapterJpegs(comicId, ep, onStage) {
+    const fr = document.createElement('iframe');
+    fr.style.cssText = 'position:fixed;left:0;top:0;width:1200px;height:2200px;border:0;' +
+                       'opacity:0.01;pointer-events:none;z-index:-99';
+    fr.src = '/mc' + comicId + '/' + ep.id;
+    document.body.appendChild(fr);
+    try {
+      const t0 = Date.now();
+      let api = null;
+      while (Date.now() - t0 < 50000) {
+        const w = fr.contentWindow;
+        if (w) {
+          let ok = false;
+          try {
+            // 必须等 iframe 真正导航到章节页——about:blank 会沿原型链拿到父窗口的
+            // __bmExport，那个函数绑的是详情页的 document，必然找不到 .image-item
+            ok = w.location.href.indexOf('/mc' + comicId + '/' + ep.id) > 0 &&
+                 w.document.readyState !== 'loading' &&
+                 w.document.querySelectorAll('.image-item').length > 0;
+          } catch (e) {}
+          if (ok) { api = w.__bmExport; break; }
+        }
+        await sleep(280);
+      }
+      if (!api) throw new Error('章节页加载超时（未渲染出图片容器）');
+      const pages = await api.collectPageBlobs((stage, i, n) => onStage(stage, i, n));
+      const pics = pages.filter((p) => p.blob);
+      if (!pics.length) throw new Error('没有抓到图片（可能是锁定章节或阅读模式不是滚动）');
+      const jpegs = [];
+      for (let i = 0; i < pics.length; i++) {
+        try {
+          const r = await api.blobToJpeg(pics[i].blob, 0.92);
+          jpegs.push({
+            index: pics[i].index,
+            data: new Uint8Array(await r.blob.arrayBuffer()),
+            w: r.w, h: r.h,
+          });
+        } catch (e) { /* 单页失败跳过 */ }
+        onStage('转码', i + 1, pics.length);
+      }
+      jpegs.sort((a, b) => a.index - b.index);
+      return jpegs;
+    } finally {
+      fr.remove();
+    }
+  }
+
+  async function crc32OfBlob(blob) {
+    let c = 0xffffffff;
+    const CH = 4 * 1024 * 1024;
+    for (let off = 0; off < blob.size; off += CH) {
+      const buf = new Uint8Array(await blob.slice(off, off + CH).arrayBuffer());
+      for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+    }
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
+  /** 流式装配大 ZIP：条目是 Blob，不用把整包读进内存 */
+  async function buildZipFromBlobs(entries, onProgress) {
+    const enc = new TextEncoder();
+    const parts = [];
+    const central = [];
+    let offset = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const f = entries[i];
+      const nameBytes = enc.encode(f.name);
+      const crc = await crc32OfBlob(f.blob);
+      const size = f.blob.size;
+
+      const lh = new Uint8Array(30 + nameBytes.length);
+      const dl = new DataView(lh.buffer);
+      dl.setUint32(0, 0x04034b50, true);
+      dl.setUint16(4, 20, true);
+      dl.setUint16(6, 0x0800, true);
+      dl.setUint16(8, 0, true);
+      dl.setUint16(10, 0, true);
+      dl.setUint16(12, 0x21, true);
+      dl.setUint32(14, crc, true);
+      dl.setUint32(18, size, true);
+      dl.setUint32(22, size, true);
+      dl.setUint16(26, nameBytes.length, true);
+      dl.setUint16(28, 0, true);
+      lh.set(nameBytes, 30);
+      parts.push(lh, f.blob);
+
+      const ch = new Uint8Array(46 + nameBytes.length);
+      const dc = new DataView(ch.buffer);
+      dc.setUint32(0, 0x02014b50, true);
+      dc.setUint16(4, 20, true);
+      dc.setUint16(6, 20, true);
+      dc.setUint16(8, 0x0800, true);
+      dc.setUint16(10, 0, true);
+      dc.setUint16(12, 0, true);
+      dc.setUint16(14, 0x21, true);
+      dc.setUint32(16, crc, true);
+      dc.setUint32(20, size, true);
+      dc.setUint32(24, size, true);
+      dc.setUint16(28, nameBytes.length, true);
+      dc.setUint16(30, 0, true);
+      dc.setUint16(32, 0, true);
+      dc.setUint16(34, 0, true);
+      dc.setUint16(36, 0, true);
+      dc.setUint32(38, 0, true);
+      dc.setUint32(42, offset, true);
+      ch.set(nameBytes, 46);
+      central.push(ch);
+
+      offset += lh.length + size;
+      if (onProgress) onProgress(i + 1, entries.length, f.name);
+    }
+
+    const centralOffset = offset;
+    let centralSize = 0;
+    for (const c of central) { parts.push(c); centralSize += c.length; }
+
+    const eocd = new Uint8Array(22);
+    const de = new DataView(eocd.buffer);
+    de.setUint32(0, 0x06054b50, true);
+    de.setUint16(4, 0, true);
+    de.setUint16(6, 0, true);
+    de.setUint16(8, entries.length, true);
+    de.setUint16(10, entries.length, true);
+    de.setUint32(12, centralSize, true);
+    de.setUint32(16, centralOffset, true);
+    de.setUint16(20, 0, true);
+    parts.push(eocd);
+
+    return new Blob(parts, { type: 'application/zip' });
+  }
+
+  async function bulkDownload(opts, ui) {
+    const info = readChapterList();
+    if (!info) throw new Error('读不到章节列表，请确认在漫画详情页（/detail/mcXXXX）并等页面加载完');
+    const todo = info.list.filter((x) => !x.locked).slice(0, opts.limit || 9999);
+    if (!todo.length) throw new Error('没有可下载的章节（全被锁定了）');
+    const skipped = info.list.filter((x) => x.locked).length;
+    const entries = [];
+    const total = todo.length;
+
+    for (let i = 0; i < total; i++) {
+      if (ui.isCancelled()) throw new Error('已取消');
+      const ep = todo[i];
+      const label = chapterLabel(ep.short);
+      ui.head(label + '（' + (i + 1) + '/' + total + '）', i / total);
+      const jpegs = await fetchChapterJpegs(info.comicId, ep, (stage, a, b) => {
+        ui.sub(label + ' · ' + stage + ' ' + a + '/' + b, (i + a / Math.max(1, b)) / total);
+      });
+      if (opts.pdf) {
+        const pdf = buildPdf(jpegs.map((p) => ({ jpeg: p.data, w: p.w, h: p.h })));
+        entries.push({ name: label + '.pdf', blob: pdf });
+      }
+      if (opts.zip) {
+        const z = buildZip(jpegs.map((p, k) => ({
+          name: String(k + 1).padStart(3, '0') + '.jpg', data: p.data,
+        })));
+        entries.push({ name: label + '.zip', blob: z });
+      }
+      jpegs.length = 0;
+      await sleep(300);
+    }
+
+    ui.head('正在组装 ' + info.bookName + '.zip', 0.97);
+    const big = await buildZipFromBlobs(entries, (i, n, name) => {
+      ui.sub('打包 ' + i + '/' + n + ' · ' + name, 0.97 + 0.03 * (i / n));
+    });
+    return { name: info.bookName, blob: big, count: entries.length, skipped, chapters: total };
+  }
+
+  function mountBulk() {
+    if (!/^\/detail\/mc\d+/.test(location.pathname)) return;
+    if (document.getElementById('bm-bulk-root')) return;
+
+    const root = document.createElement('div');
+    root.id = 'bm-bulk-root';
+    Object.assign(root.style, {
+      position: 'fixed', top: '122px', right: '18px', zIndex: '2147483646',
+      font: '13px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif',
+      color: '#fff', textAlign: 'right', userSelect: 'none',
+    });
+
+    const btn = document.createElement('button');
+    btn.textContent = '⬇ 下载全本 ZIP';
+    Object.assign(btn.style, {
+      padding: '9px 16px', border: 'none', borderRadius: '8px', cursor: 'pointer',
+      background: 'linear-gradient(135deg,#2b62f6,#1b3fcb)', color: '#fff',
+      fontSize: '13px', fontWeight: '600', boxShadow: '0 4px 14px rgba(43,98,246,.45)',
+    });
+
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+      display: 'none', marginTop: '10px', width: '272px', padding: '12px 14px',
+      background: 'rgba(22,22,28,.95)', borderRadius: '10px', textAlign: 'left',
+      boxShadow: '0 10px 30px rgba(0,0,0,.45)', border: '1px solid rgba(255,255,255,.08)',
+    });
+
+    const info = document.createElement('div');
+    info.style.cssText = 'color:#cfd6e6;font-size:12px;margin-bottom:8px;line-height:1.6';
+
+    const opt1 = document.createElement('label');
+    opt1.style.cssText = 'display:flex;align-items:center;gap:6px;color:#dfe4f0;font-size:12px;margin:4px 0;cursor:pointer';
+    opt1.innerHTML = '<input type="checkbox" checked disabled> 生成每章 PDF（必选）';
+
+    const opt2 = document.createElement('label');
+    opt2.style.cssText = 'display:flex;align-items:center;gap:6px;color:#dfe4f0;font-size:12px;margin:4px 0;cursor:pointer';
+    opt2.innerHTML = '<input type="checkbox" id="bm-opt-zip" checked> 同时打包图片 ZIP（体积翻倍）';
+
+    const go = document.createElement('button');
+    go.textContent = '开始';
+    Object.assign(go.style, {
+      width: '100%', marginTop: '10px', padding: '7px 0', border: 'none',
+      borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: '600',
+      background: '#2b62f6', color: '#fff',
+    });
+
+    const status = document.createElement('div');
+    status.style.cssText = 'color:#ddd;font-size:12px;margin-top:8px;word-break:break-all;display:none';
+    const sub = document.createElement('div');
+    sub.style.cssText = 'color:#8b93a7;font-size:11px;margin-top:2px;word-break:break-all;display:none';
+
+    const bar = document.createElement('div');
+    bar.style.cssText = 'height:4px;background:rgba(255,255,255,.14);border-radius:2px;overflow:hidden;margin-top:8px;display:none';
+    const fill = document.createElement('div');
+    fill.style.cssText = 'height:100%;width:0%;background:linear-gradient(90deg,#4a84ff,#7aa8ff);transition:width .2s';
+    bar.appendChild(fill);
+
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    cancel.style.cssText = 'width:100%;margin-top:8px;padding:6px 0;border:none;border-radius:6px;' +
+                           'cursor:pointer;font-size:12px;background:#3a3a46;color:#ddd;display:none';
+
+    panel.append(info, opt1, opt2, go, bar, status, sub, cancel);
+    root.append(btn, panel);
+
+    // 优先塞到「追漫」按钮旁边，找不到就固定定位
+    const look = [...document.querySelectorAll('button, a, div')].filter((e) => {
+      const t = (e.innerText || '').trim();
+      return (t === '追漫' || t === '取消追漫' || t === '追番' || t === '已追漫') && e.children.length <= 2;
+    });
+    const host = look[0];
+    if (host && host.parentElement) {
+      Object.assign(root.style, { position: 'relative', top: '0', right: '0', display: 'inline-block', marginLeft: '10px' });
+      host.parentElement.insertBefore(root, host.nextSibling);
+    } else {
+      document.body.appendChild(root);
+    }
+
+    let cancelled = false;
+    let running = false;
+
+    const ui = {
+      isCancelled: () => cancelled,
+      head(t, r) {
+        status.style.display = 'block'; bar.style.display = 'block';
+        status.textContent = t;
+        if (typeof r === 'number') fill.style.width = Math.max(0, Math.min(1, r)) * 100 + '%';
+      },
+      sub(t, r) {
+        sub.style.display = 'block'; sub.textContent = t;
+        if (typeof r === 'number') fill.style.width = Math.max(0, Math.min(1, r)) * 100 + '%';
+      },
+    };
+
+    btn.onclick = () => {
+      if (running) return;
+      const c = readChapterList();
+      info.innerHTML = c
+        ? '《' + c.bookName + '》<br>共 ' + c.list.length + ' 章，可下载 ' +
+          c.list.filter((x) => !x.locked).length + ' 章' +
+          (c.list.some((x) => x.locked) ? '（锁定 ' + c.list.filter((x) => x.locked).length + ' 章将跳过）' : '')
+        : '<span style="color:#ff8a8a">没读到章节列表，先等页面加载或刷新</span>';
+      panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+    };
+
+    cancel.onclick = () => { cancelled = true; status.textContent = '正在取消…'; };
+
+    go.onclick = async () => {
+      if (running) return;
+      running = true; cancelled = false;
+      go.disabled = true; go.style.opacity = '0.5';
+      cancel.style.display = 'block';
+      bar.style.display = 'block';
+      status.style.display = 'block';
+      const opts = { pdf: true, zip: document.getElementById('bm-opt-zip').checked };
+      try {
+        const r = await bulkDownload(opts, ui);
+        status.textContent = '✅ 完成：' + r.chapters + ' 章 / ' + r.count + ' 个文件，' +
+                             (r.blob.size / 1048576).toFixed(1) + 'MB' +
+                             (r.skipped ? '（跳过锁定 ' + r.skipped + ' 章）' : '');
+        fill.style.width = '100%';
+        download(r.blob, r.name + '.zip');
+      } catch (e) {
+        status.innerHTML = '<span style="color:#ff6b6b">✗ ' + (e && e.message ? e.message : e) + '</span>';
+      } finally {
+        running = false;
+        go.disabled = false; go.style.opacity = '1';
+        cancel.style.display = 'none';
+      }
+    };
+  }
+
   // 暴露给控制台手动调用（调试用）
-  window.__bmExport = { collectPageBlobs, blobToJpeg, buildZip, buildPdf, chapterName, exportAll, download, downloadAsDataUrl };
+  window.__bmExport = { collectPageBlobs, blobToJpeg, buildZip, buildPdf, chapterName, exportAll, download, downloadAsDataUrl,
+    readChapterList, fetchChapterJpegs, buildZipFromBlobs, bulkDownload };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => setTimeout(mountUI, 1200));
@@ -601,5 +956,9 @@
     setTimeout(mountUI, 1200);
   }
   // SPA 路由切换后补挂按钮
-  setInterval(() => { if (document.body) mountUI(); }, 2000);
+  setInterval(() => {
+    if (!document.body) return;
+    mountUI();
+    mountBulk();
+  }, 2000);
 })();
