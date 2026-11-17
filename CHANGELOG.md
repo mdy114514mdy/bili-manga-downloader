@@ -2,6 +2,13 @@
 
 本项目的所有重要变更都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3] - 2026-11-17
+
+### 修复
+- **详情页按钮位置错误且被裁切**：原来用 `insertBefore` 往 DOM 里插，抓到的是「追漫」按钮内部那层文字 `div`，结果被塞进 `overflow:hidden` 的小容器（宽 102px），按钮只露出半截。改为用 `getBoundingClientRect()` 计算坐标、绝对定位挂在 `body` 上，稳定贴在「追漫 / 已追」按钮右侧 12px、垂直居中，宽 `max-content` 不再被压缩
+- 追漫按钮选择器改为 `button.do-favourite`（取可见且面积最大的那个），避免匹配到页面其它位置的同名入口
+- 展开的设置面板改为绝对定位，不再挤压按钮所在的那一行
+
 ## [1.2] - 2026-11-17
 
 ### 新增

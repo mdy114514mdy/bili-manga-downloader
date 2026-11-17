@@ -2,7 +2,7 @@
 // @name         B漫章节导出（PDF + ZIP）
 // @name:en      BiliManga Chapter Exporter
 // @namespace    https://github.com/mdy114514mdy/bili-manga-downloader
-// @version      1.2
+// @version      1.3
 // @description  哔哩哔哩漫画：章节页一键导出本话 PDF+ZIP；详情页一键下载全本（逐章打包成一个大 ZIP）。零外部依赖。
 // @description:en Export one chapter (PDF+ZIP) or the whole series (one big ZIP) on bilibili manga.
 // @author       mdy114514mdy
@@ -879,18 +879,55 @@
     panel.append(info, opt1, opt2, go, bar, status, sub, cancel);
     root.append(btn, panel);
 
-    // 优先塞到「追漫」按钮旁边，找不到就固定定位
-    const look = [...document.querySelectorAll('button, a, div')].filter((e) => {
-      const t = (e.innerText || '').trim();
-      return (t === '追漫' || t === '取消追漫' || t === '追番' || t === '已追漫') && e.children.length <= 2;
-    });
-    const host = look[0];
-    if (host && host.parentElement) {
-      Object.assign(root.style, { position: 'relative', top: '0', right: '0', display: 'inline-block', marginLeft: '10px' });
-      host.parentElement.insertBefore(root, host.nextSibling);
-    } else {
-      document.body.appendChild(root);
+    // 贴到「追漫」按钮右边：用绝对定位按 rect 计算坐标，挂到 body 上。
+    // 页面里有多层文字为「追漫」的元素（button.do-favourite 里还套着 div），
+    // 直接 insertBefore 很容易插进 overflow:hidden 的小容器被裁掉。
+    function findFavBtn() {
+      const cands = [...document.querySelectorAll('button.do-favourite')].filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.width > 60 && r.height > 28;
+      });
+      if (cands.length) {
+        return cands.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          return rb.width * rb.height - ra.width * ra.height;
+        })[0];
+      }
+      return [...document.querySelectorAll('button')].find((b) =>
+        /^(追漫|取消追漫|已追漫|追番)$/.test((b.innerText || '').trim()));
     }
+
+    document.body.appendChild(root);
+    Object.assign(root.style, {
+      position: 'absolute', display: 'block', width: 'max-content',
+      whiteSpace: 'nowrap', zIndex: '2147483646',
+    });
+
+    function place() {
+      const host = findFavBtn();
+      if (!host) {
+        // 找不到就固定在右上角，避免压在导航上
+        Object.assign(root.style, { position: 'fixed', right: '18px', top: '120px', left: 'auto' });
+        return;
+      }
+      const r = host.getBoundingClientRect();
+      const right = r.right + window.scrollX + 12;
+      const top = r.top + window.scrollY + Math.max(0, (r.height - root.offsetHeight) / 2);
+      const w = root.offsetWidth || 150;
+      const overflowRight = (r.right + 12 + w) > (window.innerWidth - 8);
+      Object.assign(root.style, {
+        position: 'absolute',
+        left: (overflowRight ? Math.max(8, r.left + window.scrollX - w - 12) : right) + 'px',
+        top: top + 'px',
+        right: 'auto',
+      });
+      panel.style.right = overflowRight ? '0' : '0';
+    }
+    place();
+    setTimeout(place, 800);
+    setTimeout(place, 2000);
+    window.addEventListener('resize', place);
+    setInterval(place, 3000);
 
     let cancelled = false;
     let running = false;
