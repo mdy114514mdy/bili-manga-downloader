@@ -1,5 +1,9 @@
 # bili-manga-downloader
 
+<p align="center">
+  <img src="assets/icon-256.png" width="120" alt="bili-manga-downloader icon">
+</p>
+
 > 哔哩哔哩漫画章节导出用户脚本 —— 在章节页右上角点一下，把本话全部**原图**抓下来，打包成 **PDF** 和 **ZIP** 两个文件。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -116,6 +120,7 @@ A：JPEG 已经是有损压缩产物，二次编码只会掉画质。DCTDecode �
 ```
 bili-manga-downloader/
 ├── bili-manga-downloader.user.js   # 用户脚本本体（单文件，约 570 行）
+├── assets/                         # 图标（含 GitHub 社交预览图）
 ├── README.md
 ├── CHANGELOG.md
 ├── LICENSE

@@ -7,7 +7,7 @@
 // @description:en Add a button on bilibili manga chapter pages: grab every original page image and pack them into PDF + ZIP.
 // @author       mdy114514mdy
 // @match        https://manga.bilibili.com/*
-// @icon         https://manga.bilibili.com/favicon.ico
+// @icon         https://raw.githubusercontent.com/mdy114514mdy/bili-manga-downloader/main/assets/icon-128.png
 // @homepageURL  https://github.com/mdy114514mdy/bili-manga-downloader
 // @supportURL   https://github.com/mdy114514mdy/bili-manga-downloader/issues
 // @downloadURL  https://raw.githubusercontent.com/mdy114514mdy/bili-manga-downloader/main/bili-manga-downloader.user.js
