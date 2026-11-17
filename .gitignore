@@ -1,0 +1,19 @@
+# 临时文件
+*.log
+*.tmp
+*.bak
+*.crdownload
+
+# 导出产物
+*.pdf
+*.zip
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
