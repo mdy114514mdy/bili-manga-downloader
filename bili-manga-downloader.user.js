@@ -902,6 +902,11 @@
       position: 'absolute', display: 'block', width: 'max-content',
       whiteSpace: 'nowrap', zIndex: '2147483646',
     });
+    // 面板必须绝对定位，否则展开时会把 root 撑宽、触发下面的“换边”逻辑
+    Object.assign(panel.style, {
+      position: 'absolute', top: '100%', right: '0', marginTop: '8px',
+      width: '272px',
+    });
 
     function place() {
       const host = findFavBtn();
@@ -913,21 +918,16 @@
       const r = host.getBoundingClientRect();
       const right = r.right + window.scrollX + 12;
       const top = r.top + window.scrollY + Math.max(0, (r.height - root.offsetHeight) / 2);
-      const w = root.offsetWidth || 150;
-      const overflowRight = (r.right + 12 + w) > (window.innerWidth - 8);
       Object.assign(root.style, {
         position: 'absolute',
-        left: (overflowRight ? Math.max(8, r.left + window.scrollX - w - 12) : right) + 'px',
+        left: right + 'px',
         top: top + 'px',
         right: 'auto',
       });
-      panel.style.right = overflowRight ? '0' : '0';
     }
     place();
-    setTimeout(place, 800);
-    setTimeout(place, 2000);
-    window.addEventListener('resize', place);
-    setInterval(place, 3000);
+    setTimeout(place, 900);
+    window.addEventListener('resize', () => setTimeout(place, 120));
 
     let cancelled = false;
     let running = false;
